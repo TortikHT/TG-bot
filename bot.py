@@ -444,6 +444,7 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=main_menu())
 
 #  ---- конец кода 3/N ----
+
 # ===== Оформление заказа =====
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -541,6 +542,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 #  ---- конец кода 4/N ----#
+
     # ===== Кнопка Я оплатил =====
     if text == '✅ Я оплатил':
         current_session = sessions.get(user_id, {})
@@ -836,6 +838,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "После оплаты нажми кнопку 👇",
                 reply_markup=payment_menu()
             )
+            
+            await notify_user_payment_wait(update, order_id)
+            
             sessions[user_id] = {
                 'step': 'waiting_payment',
                 'order_id': new_order.id
