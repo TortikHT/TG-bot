@@ -1154,7 +1154,7 @@ def main():
     print(f"👤 Админ ID: {ADMIN_ID}")
     print(f"💰 Цена за слайд: {PRICE_PER_SLIDE} ₽")
     print(f"🎁 Скидка: {DISCOUNT_PERCENT}% от {DISCOUNT_FROM_SLIDES} слайдов")
-    print(f"🌙 Ночной режим: с {NIGHT_START}:00 до {NIGHT_END}:00")
+    print(f"🌙 Ночной режим: с {NIGHT_START}:00 до {NIGHT_END}:00")п
     print(f"⚡ Срочная наценка: +{URGENT_SURCHARGE_PERCENT}%")
     print(f"‼️ Все оплаты строго через @{ADMIN_USERNAME}")
 
