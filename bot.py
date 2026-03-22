@@ -719,13 +719,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ожидание оплаты (возврат сообщения если человек зашел раньше времени)
     if step == 'waiting_payment':
         order_id = session.get('order_id')
-        await update.message.reply_text(
-            f"⏳ Заказ #{order_id} ожидает оплаты.\n\n"
-            f"❗ Для получения реквизитов обязательно напишите @{ADMIN_USERNAME}\n"
-            "После оплаты вернитесь и нажмите кнопку '✅ Я оплатил'",
-            reply_markup=payment_menu()
-        )
-        return
+        # Игнорируем повторные сообщения, кроме кнопки
+        if text != '✅ Я оплатил':
+            return  # Не отвечаем ничем пользователю!
 
     # Кнопка оплаты — пользователь сообщил, что оплатил
     if text == '✅ Я оплатил':
@@ -1123,4 +1119,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main() 
