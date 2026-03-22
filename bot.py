@@ -1,10 +1,13 @@
 import os
+import sys
 import json
 import logging
+import asyncio
+import httpx
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     ContextTypes, filters
@@ -44,12 +47,54 @@ logger = logging.getLogger(__name__)
 
 # ===== Загрузка настроек =====
 load_dotenv()
+
+def _int_env(name: str, default: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return int(str(raw).strip())
+
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
+ADMIN_ID = _int_env('ADMIN_ID', 0)
 ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'TortiKht')
-PRICE_PER_SLIDE = int(os.getenv('PRICE_PER_SLIDE', 25))
-DISCOUNT_PERCENT = int(os.getenv('DISCOUNT_PERCENT', 10))
-DISCOUNT_FROM_SLIDES = int(os.getenv('DISCOUNT_FROM_SLIDES', 10))
+PRICE_PER_SLIDE = _int_env('PRICE_PER_SLIDE', 25)
+DISCOUNT_PERCENT = _int_env('DISCOUNT_PERCENT', 10)
+DISCOUNT_FROM_SLIDES = _int_env('DISCOUNT_FROM_SLIDES', 10)
+HF_TOKEN = os.getenv('HF_TOKEN', '').strip() or None
+HF_MODEL = os.getenv('HF_MODEL', 'Qwen/Qwen2.5-3B-Instruct')
+
+# ===== Hugging Face Inference (HTTP; httpx идёт с python-telegram-bot) =====
+def hf_generate_sync(prompt: str) -> str:
+    if not HF_TOKEN:
+        raise ValueError("HF_TOKEN не задан в .env")
+    url = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 2048,
+            "return_full_text": False,
+        },
+    }
+    with httpx.Client(timeout=120.0) as client:
+        r = client.post(url, headers=headers, json=payload)
+        if r.status_code == 503:
+            raise RuntimeError("Модель на стороне HF загружается — подожди минуту и повтори.")
+        r.raise_for_status()
+        data = r.json()
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(str(data["error"]))
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        text = data[0].get("generated_text")
+        if text is not None:
+            return str(text).strip()
+    if isinstance(data, dict) and "generated_text" in data:
+        return str(data["generated_text"]).strip()
+    raise RuntimeError(f"Неожиданный ответ API: {str(data)[:500]}")
+
+async def hf_generate_async(prompt: str) -> str:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, hf_generate_sync, prompt)
 
 # ===== Константы =====
 URGENT_SURCHARGE_PERCENT = 30
@@ -168,6 +213,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             ['📦 Заказать презентацию'],
             ['📄 Мои заказы', '💰 Прайс'],
             ['❌ Отменить заказ', '📊 Моя статистика'],
+            ['🤖 ИИ план презентации'],
             ['ℹ️ О боте', '📞 Связь с нами'],
         ],
         resize_keyboard=True
@@ -354,6 +400,32 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
     )
 
+async def ai_plan_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg:
+        logger.warning("ai_plan_start: нет сообщения в update (например, не личный чат)")
+        return
+    user = update.effective_user
+    if not user:
+        return
+    user_id = user.id
+    if is_blocked(user_id):
+        return await msg.reply_text("❌ Вы заблокированы и не можете использовать этого бота.")
+    if not HF_TOKEN:
+        return await msg.reply_text(
+            "❌ ИИ не настроен. Создай токен на huggingface.co/settings/tokens и добавь в .env:\n"
+            "HF_TOKEN=твой_токен\n"
+            "Опционально: HF_MODEL=Qwen/Qwen2.5-3B-Instruct",
+            reply_markup=main_menu(),
+        )
+    sessions[user_id] = {"step": "ai_plan"}
+    return await msg.reply_text(
+        "🤖 Опиши тему презентации одним сообщением (можно указать желаемое число слайдов).\n\n"
+        "Я сгенерирую примерную структуру слайдов через Hugging Face.\n\n"
+        "Например: «История Древней Греции, 12 слайдов»",
+        reply_markup=ReplyKeyboardMarkup([['🔙 Назад']], resize_keyboard=True),
+    )
+
 async def cancel_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_orders = [
@@ -421,6 +493,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == '📞 Связь с нами':
         return await contact_us(update, context)
 
+    if text == '🤖 ИИ план презентации':
+        return await ai_plan_start(update, context)
+
     if text in ['🔙 Назад', '❌ Отмена']:
         sessions.pop(user_id, None)
         return await update.message.reply_text("Возвращаюсь в главное меню 👇", reply_markup=main_menu())
@@ -429,6 +504,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Используй меню 👇", reply_markup=main_menu())
 
     step = session.get('step', '')
+
+    if step == 'ai_plan':
+        if len(text) < MIN_TOPIC_LEN:
+            return await update.message.reply_text(
+                "❌ Опиши тему подробнее (минимум 3 символа).",
+                reply_markup=ReplyKeyboardMarkup([['🔙 Назад']], resize_keyboard=True),
+            )
+        await update.message.reply_text("⏳ Генерирую план через Hugging Face…")
+        prompt = (
+            "Ты помощник по презентациям. На русском языке составь структуру презентации: "
+            "нумерованный список слайдов; для каждого слайда — заголовок и 2–4 коротких пункта, что на нём показать. "
+            "Без вступления и заключения, только структура. Тема:\n"
+            + text
+        )
+        try:
+            out = await hf_generate_async(prompt)
+        except Exception as e:
+            logger.exception("HF Inference: %s", e)
+            sessions.pop(user_id, None)
+            return await update.message.reply_text(
+                "❌ Не удалось получить ответ от ИИ. Проверь HF_TOKEN, модель HF_MODEL и квоту на Hugging Face.",
+                reply_markup=main_menu(),
+            )
+        sessions.pop(user_id, None)
+        for i in range(0, len(out), 4000):
+            await update.message.reply_text(out[i : i + 4000])
+        return await update.message.reply_text(
+            "Если нужно оформление под ключ — закажи презентацию в меню 👇",
+            reply_markup=main_menu(),
+        )
 
     # Выбор заказа для отмены
     if step == 'cancel_choose':
@@ -958,15 +1063,36 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== Запуск бота =====
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
     os.makedirs(DATA_DIR, exist_ok=True)
     if not BOT_TOKEN:
         raise ValueError("❌ BOT_TOKEN не найден в .env")
     if not ADMIN_ID:
         raise ValueError("❌ ADMIN_ID не найден в .env")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).job_queue(None).build()
+    # Telegram по умолчанию ждёт 5 с — на медленном интернете или при блокировках падает TimedOut
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .connect_timeout(60.0)
+        .read_timeout(60.0)
+        .write_timeout(60.0)
+        .pool_timeout(10.0)
+        .get_updates_connect_timeout(60.0)
+        .get_updates_read_timeout(60.0)
+        .get_updates_write_timeout(60.0)
+        .get_updates_pool_timeout(10.0)
+        .job_queue(None)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ai", ai_plan_start))
     app.add_handler(CommandHandler("orders", admin_orders))
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("pending", admin_pending))
@@ -988,7 +1114,8 @@ def main():
     print(f"🌙 Ночной режим: с {NIGHT_START}:00 до {NIGHT_END}:00")
     print(f"⚡ Срочная наценка: +{URGENT_SURCHARGE_PERCENT}%")
     print(f"‼️ Все оплаты через @{ADMIN_USERNAME}")
-    app.run_polling()
+    # bootstrap_retries < 0 — повторять подключение к api.telegram.org при сбоях сети
+    app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
