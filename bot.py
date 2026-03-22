@@ -47,6 +47,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin_support')
+print(f"DEBUG: ADMIN_USERNAME = '{ADMIN_USERNAME}'")
 PRICE_PER_SLIDE = int(os.getenv('PRICE_PER_SLIDE', 25))
 DISCOUNT_PERCENT = int(os.getenv('DISCOUNT_PERCENT', 10))
 DISCOUNT_FROM_SLIDES = int(os.getenv('DISCOUNT_FROM_SLIDES', 10))
@@ -364,7 +365,7 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Например: История России, Маркетинг для стартапов",
         reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
     )
-    
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
