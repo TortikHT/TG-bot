@@ -194,8 +194,7 @@ def payment_menu() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-    def format_order(o: Order) -> str:
-    """Форматирование заказа для пользователя"""
+def format_order(o: Order) -> str:
     discount_text = f'{DISCOUNT_PERCENT}% (-{o.discount} ₽)' if o.discount else 'нет'
     remind_text = 'да' if o.remind else 'нет'
     urgent_text = '⚡ СРОЧНЫЙ (+30%)' if o.urgent else '📦 Обычный'
@@ -231,8 +230,9 @@ def format_order_short(o: Order) -> str:
         f'   Создан: {o.created_at}'
     )
 
+    # --- КОМАНДЫ ДЛЯ ПОЛЬЗОВАТЕЛЯ ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start — запускает бота и выводит главное меню"""
     user = update.effective_user
     user_id = user.id
     username = user.username or user.first_name or str(user_id)
@@ -350,6 +350,8 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n😊 Спасибо за заказ! Ждём тебя снова!"
     await update.message.reply_text(text, reply_markup=main_menu())
 
+# --- ПОЛНОСТЬЮ ПЕРЕСТРОЕННЫЙ ОБРАБОТЧИК СООБЩЕНИЙ (ПОШАГОВОЙ ЛОГИКИ) ---
+
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Старт оформления заказа (шаг 1)"""
     user_id = update.effective_user.id
@@ -362,28 +364,7 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Например: История России, Маркетинг для стартапов",
         reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
     )
-
-async def cancel_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Старт отмены заказа"""
-    user_id = update.effective_user.id
-    user_orders = [
-        o for o in orders
-        if o.user_id == user_id and o.status not in [STATUS_DONE, STATUS_CANCELLED]
-    ]
-    if not user_orders:
-        return await update.message.reply_text(
-            "📭 У тебя нет активных заказов для отмены.",
-            reply_markup=main_menu()
-        )
-    sessions[user_id] = {"step": "cancel_choose"}
-    await update.message.reply_text(
-        "🗑 Выбери заказ для отмены:\n\n"
-        "⚠️ Отменённый заказ нельзя восстановить!",
-        reply_markup=cancel_menu(user_orders)
-    )
-
-# --- ГЛАВНЫЙ ОБРАБОТЧИК СООБЩЕНИЙ (fragment 1) ---
-
+    
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -446,15 +427,97 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu()
         )
 
-            # --- ЭТАПЫ ОФОРМЛЕНИЯ ЗАКАЗА ---
-
-    # Если нет сессии — вернуть главное меню
+    # --- ЭТАПЫ ОФОРМЛЕНИЯ ЗАКАЗА ---
     if not session:
         return await update.message.reply_text(
             "Используй меню 👇",
             reply_markup=main_menu()
         )
     step = session.get('step', '')
+
+    # Выбор заказа для отмены
+    if step == 'cancel_choose':
+        if text.startswith('🗑 Отменить заказ #'):
+            try:
+                order_id = int(text.split('#')[1].split('—')[0].strip())
+            except (ValueError, IndexError):
+                return await update.message.reply_text(
+                    "❌ Ошибка. Попробуй снова.",
+                    reply_markup=main_menu()
+                )
+            order = next((o for o in orders if o.id == order_id and o.user_id == user_id), None)
+            if not order:
+                sessions.pop(user_id, None)
+                return await update.message.reply_text(
+                    "❌ Заказ не найден.",
+                    reply_markup=main_menu()
+                )
+            session['cancel_order_id'] = order_id
+            session['step'] = 'cancel_confirm'
+            return await update.message.reply_text(
+                f"⚠️ Ты уверен, что хочешь отменить?\n\n"
+                f"{format_order(order)}\n\n"
+                "⚠️ Отменённый заказ нельзя восстановить!",
+                reply_markup=ReplyKeyboardMarkup(
+                    [['✅ Да, отменить'], ['❌ Нет, оставить']],
+                    resize_keyboard=True
+                )
+            )
+        else:
+            return await update.message.reply_text("Выбери заказ из списка 👇")
+
+    # Подтверждение отмены заказа
+    if step == 'cancel_confirm':
+        order_id = session.get('cancel_order_id')
+        order = next((o for o in orders if o.id == order_id and o.user_id == user_id), None)
+        if text == '✅ Да, отменить':
+            if order:
+                order.status = STATUS_CANCELLED
+                persist_orders()
+                update_stats_on_cancel(order)
+            sessions.pop(user_id, None)
+            await update.message.reply_text(
+                f"✅ Заказ #{order_id} отменён!",
+                reply_markup=main_menu()
+            )
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"❌ Заказ #{order_id} отменён пользователем!\n\n"
+                f"👤 @{username} (ID: {user_id})\n\n"
+                f"{format_order(order) if order else 'Заказ не найден'}"
+            )
+        elif text == '❌ Нет, оставить':
+            sessions.pop(user_id, None)
+            await update.message.reply_text(
+                "👍 Заказ остался активным.",
+                reply_markup=main_menu()
+            )
+        else:
+            await update.message.reply_text(
+                "Выбери вариант из кнопок.",
+                reply_markup=ReplyKeyboardMarkup(
+                    [['✅ Да, отменить'], ['❌ Нет, оставить']],
+                    resize_keyboard=True
+                )
+            )
+        return
+
+    # Обработка выбора "Сделать срочным" ночью (urgent_choice)
+    if step == 'urgent_choice':
+        if text == '🚨 Сделать СРОЧНЫМ (+30%)':
+            sessions[user_id]['urgent'] = True
+            sessions[user_id]['step'] = 'topic'
+            return await update.message.reply_text(
+                f"⚡ Срочный заказ! (+{URGENT_SURCHARGE_PERCENT}%)\n\n"
+                "📌 Шаг 1/5\nВведи тему презентации:",
+                reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
+            )
+        else:
+            sessions.pop(user_id, None)
+            return await update.message.reply_text(
+                "Оформление отменено.",
+                reply_markup=main_menu()
+            )
 
     # Шаг выбора темы
     if step == 'topic':
@@ -691,10 +754,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu()
     )
 
-
-# --- ДАЛЬШЕ: Отмена заказа, админ-команды, работа с файлами, запуск бота ---
-
-# --- ОТМЕНА ЗАКАЗА (ВНУТРИ ОБРАБОТЧИКА handle_text) ---
+    # --- ОТМЕНА ЗАКАЗА ЗАПУСКОМ ОТДЕЛЬНОЙ КОМАНДЫ ---
 async def cancel_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_orders = [
@@ -713,101 +773,8 @@ async def cancel_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=cancel_menu(user_orders)
     )
 
-# --- ОБРАБОТКА ОТМЕНЫ ВНУТРИ handle_text ---
-
-    # Выбор заказа для отмены
-    if step == 'cancel_choose':
-        if text.startswith('🗑 Отменить заказ #'):
-            try:
-                order_id = int(text.split('#')[1].split('—')[0].strip())
-            except (ValueError, IndexError):
-                return await update.message.reply_text(
-                    "❌ Ошибка. Попробуй снова.",
-                    reply_markup=main_menu()
-                )
-            order = next(
-                (o for o in orders if o.id == order_id and o.user_id == user_id),
-                None
-            )
-            if not order:
-                sessions.pop(user_id, None)
-                return await update.message.reply_text(
-                    "❌ Заказ не найден.",
-                    reply_markup=main_menu()
-                )
-            session['cancel_order_id'] = order_id
-            session['step'] = 'cancel_confirm'
-            return await update.message.reply_text(
-                f"⚠️ Ты уверен, что хочешь отменить?\n\n"
-                f"{format_order(order)}\n\n"
-                "⚠️ Отменённый заказ нельзя восстановить!",
-                reply_markup=ReplyKeyboardMarkup(
-                    [['✅ Да, отменить'], ['❌ Нет, оставить']],
-                    resize_keyboard=True
-                )
-            )
-        else:
-            return await update.message.reply_text("Выбери заказ из списка 👇")
-
-    # Подтверждение отмены
-    if step == 'cancel_confirm':
-        order_id = session.get('cancel_order_id')
-        order = next(
-            (o for o in orders if o.id == order_id and o.user_id == user_id),
-            None
-        )
-        if text == '✅ Да, отменить':
-            if order:
-                order.status = STATUS_CANCELLED
-                persist_orders()
-                update_stats_on_cancel(order)
-            sessions.pop(user_id, None)
-            await update.message.reply_text(
-                f"✅ Заказ #{order_id} отменён!",
-                reply_markup=main_menu()
-            )
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"❌ Заказ #{order_id} отменён пользователем!\n\n"
-                f"👤 @{username} (ID: {user_id})\n\n"
-                f"{format_order(order) if order else 'Заказ не найден'}"
-            )
-        elif text == '❌ Нет, оставить':
-            sessions.pop(user_id, None)
-            await update.message.reply_text(
-                "👍 Заказ остался активным.",
-                reply_markup=main_menu()
-            )
-        else:
-            await update.message.reply_text(
-                "Выбери вариант из кнопок.",
-                reply_markup=ReplyKeyboardMarkup(
-                    [['✅ Да, отменить'], ['❌ Нет, оставить']],
-                    resize_keyboard=True
-                )
-            )
-        return
-
-    # Обработка выбора "Сделать срочным" ночью (urgent_choice)
-    if step == 'urgent_choice':
-        if text == '🚨 Сделать СРОЧНЫМ (+30%)':
-            sessions[user_id]['urgent'] = True
-            sessions[user_id]['step'] = 'topic'
-            return await update.message.reply_text(
-                f"⚡ Срочный заказ! (+{URGENT_SURCHARGE_PERCENT}%)\n\n"
-                "📌 Шаг 1/5\nВведи тему презентации:",
-                reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
-            )
-        else:
-            sessions.pop(user_id, None)
-            return await update.message.reply_text(
-                "Оформление отменено.",
-                reply_markup=main_menu()
-            )
-
 # --- АДМИНИСТРАТОРСКИЕ КОМАНДЫ ---
 
-# Список всех заказов
 async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -830,11 +797,9 @@ async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i in range(0, len(msg), 4000):
         await update.message.reply_text(msg[i:i+4000])
 
-# Статистика бота
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
-
     total = len(orders)
     waiting_payment = len([o for o in orders if o.status == STATUS_WAITING_PAYMENT])
     paid = len([o for o in orders if o.status == STATUS_PAID])
@@ -844,7 +809,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     revenue = get_total_revenue()
     active_users = len(user_stats)
     total_slides = sum(o.slides for o in orders if o.status == STATUS_DONE)
-
     msg = (
         "📊 Статистика бота:\n\n"
         f"📦 Всего заказов: {total}\n"
@@ -859,7 +823,6 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg)
 
-# Просмотр ожидающих оплаты
 async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -877,7 +840,6 @@ async def admin_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i in range(0, len(msg), 4000):
         await update.message.reply_text(msg[i:i+4000])
 
-# Просмотр оплаченных заказов
 async def admin_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -896,7 +858,7 @@ async def admin_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i in range(0, len(msg), 4000):
         await update.message.reply_text(msg[i:i+4000])
 
-# Подтверждение оплаты заказчиком
+        # --- ПОДТВЕРЖДЕНИЕ/ОТКЛОНЕНИЕ ОПЛАТЫ ---
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -931,7 +893,6 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"Оплата заказа #{order_id} подтверждена")
 
-# Отклонение оплаты заказчиком
 async def reject_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -955,8 +916,6 @@ async def reject_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Проверь перевод и реквизиты, затем попробуй снова или напиши администратору."
     )
     logger.info(f"Оплата заказа #{order_id} отклонена")
-
-# --- ПОСЛЕДНИЕ 200+ СТРОК, включая остальной админ-функционал, поддержку блокировки/рассылки, загрузку файлов, запуск ---
 
 # --- ОТПРАВКА ФАЙЛОВ КЛИЕНТАМ ---
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1012,7 +971,6 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not order:
         admin_upload.pop(user_id, None)
         return await update.message.reply_text("❌ Заказ не найден.")
-
     await context.bot.send_document(
         chat_id=order.user_id,
         document=update.message.document.file_id,
@@ -1031,7 +989,6 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     persist_orders()
     update_stats_on_complete(order)
     admin_upload.pop(user_id, None)
-
     await update.message.reply_text(
         f"✅ Файл отправлен!\n"
         f"Заказ #{order.id} закрыт. ✅\n\n"
@@ -1040,7 +997,7 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"Заказ #{order_id} завершён")
 
-# --- БРОАДКАСТ И БЛОКИРОВКИ ---
+# --- АДМИН-БЛОКИРОВКА, РАЗБЛОКИРОВКА, РАССЫЛКА ---
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -1154,7 +1111,7 @@ def main():
     print(f"👤 Админ ID: {ADMIN_ID}")
     print(f"💰 Цена за слайд: {PRICE_PER_SLIDE} ₽")
     print(f"🎁 Скидка: {DISCOUNT_PERCENT}% от {DISCOUNT_FROM_SLIDES} слайдов")
-    print(f"🌙 Ночной режим: с {NIGHT_START}:00 до {NIGHT_END}:00")п
+    print(f"🌙 Ночной режим: с {NIGHT_START}:00 до {NIGHT_END}:00")
     print(f"⚡ Срочная наценка: +{URGENT_SURCHARGE_PERCENT}%")
     print(f"‼️ Все оплаты строго через @{ADMIN_USERNAME}")
 
