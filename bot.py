@@ -676,38 +676,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             persist_stats()
             sessions.pop(user_id, None)
 
-        # --- МЕССЕДЖ ДЛЯ ОПЛАТЫ ТОЛЬКО через обращение к админу! ---
-        print("ОТПРАВЛЯЮ ПОЛЬЗОВАТЕЛЮ СООБЩЕНИЕ ОБ ОПЛАТЕ:", ADMIN_USERNAME)
-
-        await update.message.reply_text(
-            "!!!TEST!!!\n"
-            f"✅ Заказ #{new_order.id} создан!\n"
-            f"💰 К оплате: {new_order.final} ₽\n"
-            "——" * 16 + "\n\n"
-            f"❗ Чтобы оплатить заказ, ОБЯЗАТЕЛЬНО напишите @{ADMIN_USERNAME} 👈\n"
-            f"В сообщении укажите номер заказа и дождитесь реквизитов для оплаты.\n\n"
-            "После оплаты вернитесь сюда и нажмите 👇 '✅ Я оплатил'",
-            reply_markup=payment_menu()
-        )
-
-        sessions[user_id] = {
-            'step': 'waiting_payment',
-            'order_id': new_order.id
-        } 
-        await context.bot.send_message(
+            # --- МЕССЕДЖ для оплаты ТОЛЬКО через обращение к админу! ---
+            await update.message.reply_text(
+                
+                f"✅ Заказ #{new_order.id} создан!\n\n"
+                f"💰 К оплате: {new_order.final} ₽\n"
+                "——" * 16 + "\n\n"
+                f"❗ Чтобы оплатить заказ, ОБЯЗАТЕЛЬНО напишите @{ADMIN_USERNAME} 👈\n"
+                f"В сообщении укажите номер заказа и дождитесь реквизитов для оплаты.\n\n"
+                "После оплаты вернитесь сюда и нажмите 👇 '✅ Я оплатил'",
+                reply_markup=payment_menu()
+            )
+            sessions[user_id] = {
+                'step': 'waiting_payment',
+                'order_id': new_order.id
+            }
+            await context.bot.send_message(
                 ADMIN_ID,
                 f"📥 Новый заказ #{new_order.id} ожидает оплаты!\n\n"
                 f"👤 @{username} (ID: {user_id})\n\n"
                 f"{format_order(new_order)}"
             )
-    elif text in ['❌ Нет, начать заново', 'нет']:
-        sessions.pop(user_id, None)
-        await update.message.reply_text(
+        elif text in ['❌ Нет, начать заново', 'нет']:
+            sessions.pop(user_id, None)
+            await update.message.reply_text(
                 "❌ Заказ отменён. Начни заново 👇",
                 reply_markup=main_menu()
             )
-    else:
-        await update.message.reply_text(
+        else:
+            await update.message.reply_text(
                 "Выбери вариант из кнопок 👇",
                 reply_markup=ReplyKeyboardMarkup(
                     [['✅ Да, всё верно'], ['❌ Нет, начать заново']],
@@ -719,9 +716,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ожидание оплаты (возврат сообщения если человек зашел раньше времени)
     if step == 'waiting_payment':
         order_id = session.get('order_id')
-        # Игнорируем повторные сообщения, кроме кнопки
-        if text != '✅ Я оплатил':
-            return  # Не отвечаем ничем пользователю!
+        await update.message.reply_text(
+            f"⏳ Заказ #{order_id} ожидает оплаты.\n\n"
+            f"❗ Для получения реквизитов обязательно напишите @{ADMIN_USERNAME}\n"
+            "После оплаты вернитесь и нажмите кнопку '✅ Я оплатил'",
+            reply_markup=payment_menu()
+        )
+        return
 
     # Кнопка оплаты — пользователь сообщил, что оплатил
     if text == '✅ Я оплатил':
@@ -1119,4 +1120,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
