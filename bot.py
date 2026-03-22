@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 from datetime import datetime, timedelta
 
-# --- ФАЙЛОВОЕ ХРАНИЛИЩЕ И НАСТРОЙКИ ---
+# ===== Файловое хранилище =====
 DATA_DIR = "data"
 ORDERS_PATH = os.path.join(DATA_DIR, "orders.json")
 STATS_PATH = os.path.join(DATA_DIR, "user_stats.json")
@@ -42,27 +42,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Загрузка переменных ---
+# ===== Загрузка настроек =====
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
-ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin_support')
-print(f"DEBUG: ADMIN_USERNAME = '{ADMIN_USERNAME}'")
+ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'TortiKht')
 PRICE_PER_SLIDE = int(os.getenv('PRICE_PER_SLIDE', 25))
 DISCOUNT_PERCENT = int(os.getenv('DISCOUNT_PERCENT', 10))
 DISCOUNT_FROM_SLIDES = int(os.getenv('DISCOUNT_FROM_SLIDES', 10))
 
-# --- Константы ---
+# ===== Константы =====
 URGENT_SURCHARGE_PERCENT = 30
 NIGHT_START = 0
 NIGHT_END = 10
 MAX_SLIDES = 100
-MIN_SLIDES = 1
+MIN_SLIDES = 5
 MIN_TOPIC_LEN = 3
 MIN_DEADLINE_LEN = 3
 MINUTES_PER_5_SLIDES = 15
 
-# --- Статусы заказов ---
+# ===== Статусы заказов =====
 STATUS_NEW = 'новый'
 STATUS_WAITING_PAYMENT = 'ожидает_оплату'
 STATUS_PAID = 'оплачен'
@@ -105,6 +104,7 @@ admin_upload: Dict[int, int] = {}
 user_stats: Dict[int, UserStats] = {int(k): UserStats(**v) for k, v in load_json(STATS_PATH, default={}).items()}
 blocked_users: List[int] = []
 
+# ===== Вспомогательные функции =====
 def calculate_price(slides: int, urgent: bool = False) -> dict:
     base = slides * PRICE_PER_SLIDE
     discount = int(base * DISCOUNT_PERCENT // 100) if slides >= DISCOUNT_FROM_SLIDES else 0
@@ -231,21 +231,14 @@ def format_order_short(o: Order) -> str:
         f'   Создан: {o.created_at}'
     )
 
-    # --- КОМАНДЫ ДЛЯ ПОЛЬЗОВАТЕЛЯ ---
-
+# ===== Команды для пользователей =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     username = user.username or user.first_name or str(user_id)
-
     if is_blocked(user_id):
-        return await update.message.reply_text(
-            "❌ Вы заблокированы и не можете использовать этого бота."
-        )
-
+        return await update.message.reply_text("❌ Вы заблокированы и не можете использовать этого бота.")
     get_or_create_stats(user_id, username)
-    logger.info(f"Пользователь {username} ({user_id}) запустил бота")
-
     text = (
         f"Привет, {user.first_name}! 👋\n\n"
         "Я бот для быстрого заказа презентаций.\n\n"
@@ -301,17 +294,16 @@ async def price_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if price['discount'] > 0:
             examples.append(
                 f"• {slides} слайдов = {price['final']} ₽ "
-                f"(скидка {price['discount']} ₽) | "
-                f"срочно: {urgent_price['final']} ₽"
+                f"(скидка {price['discount']} ₽) | срочно: {urgent_price['final']} ₽"
             )
         else:
             examples.append(
-                f"• {slides} слайдов = {price['final']} ₽ | "
-                f"срочно: {urgent_price['final']} ₽"
+                f"• {slides} слайдов = {price['final']} ₽ | срочно: {urgent_price['final']} ₽"
             )
     text = (
         "💰 Прайс:\n\n"
         f"• {PRICE_PER_SLIDE} ₽ за 1 слайд\n"
+        f"• Минимум {MIN_SLIDES} слайдов\n"
         f"• Скидка {DISCOUNT_PERCENT}% от {DISCOUNT_FROM_SLIDES} слайдов\n"
         f"• Срочный заказ (00:00–10:00): +{URGENT_SURCHARGE_PERCENT}%\n\n"
         "📊 Примеры расчёта:\n"
@@ -323,7 +315,7 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     username = user.username or user.first_name or str(user_id)
-    stats = get_or_create_stats(user_id, username)
+    get_or_create_stats(user_id, username)
     user_orders = [o for o in orders if o.user_id == user_id]
     waiting_payment = len([o for o in user_orders if o.status == STATUS_WAITING_PAYMENT])
     paid = len([o for o in user_orders if o.status == STATUS_PAID])
@@ -332,7 +324,6 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cancelled = len([o for o in user_orders if o.status == STATUS_CANCELLED])
     total_spent = sum(o.final for o in user_orders if o.status == STATUS_DONE)
     total_slides = sum(o.slides for o in user_orders if o.status == STATUS_DONE)
-
     text = (
         f"📊 Твоя статистика:\n\n"
         f"👤 Пользователь: @{username}\n\n"
@@ -351,19 +342,34 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n😊 Спасибо за заказ! Ждём тебя снова!"
     await update.message.reply_text(text, reply_markup=main_menu())
 
-# --- ПОЛНОСТЬЮ ПЕРЕСТРОЕННЫЙ ОБРАБОТЧИК СООБЩЕНИЙ (ПОШАГОВОЙ ЛОГИКИ) ---
-
+# ===== Оформление заказа =====
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Старт оформления заказа (шаг 1)"""
     user_id = update.effective_user.id
     urgent = sessions.get(user_id, {}).get('urgent', False)
     sessions[user_id] = {"step": "topic", "urgent": urgent}
     prefix = "⚡ СРОЧНЫЙ заказ\n\n" if urgent else ""
     await update.message.reply_text(
-        f"{prefix}📌 Шаг 1/5\n\n"
-        "Введи тему презентации:\n\n"
+        f"{prefix}📌 Шаг 1/5\n\nВведи тему презентации:\n\n"
         "Например: История России, Маркетинг для стартапов",
         reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
+    )
+
+async def cancel_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_orders = [
+        o for o in orders
+        if o.user_id == user_id and o.status not in [STATUS_DONE, STATUS_CANCELLED]
+    ]
+    if not user_orders:
+        return await update.message.reply_text(
+            "📭 У тебя нет активных заказов для отмены.",
+            reply_markup=main_menu()
+        )
+    sessions[user_id] = {"step": "cancel_choose"}
+    await update.message.reply_text(
+        "🗑 Выбери заказ для отмены:\n\n"
+        "⚠️ Отменённый заказ нельзя восстановить!",
+        reply_markup=cancel_menu(user_orders)
     )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,10 +380,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = sessions.get(user_id)
 
     if is_blocked(user_id):
-        return await update.message.reply_text(
-            "❌ Вы заблокированы и не можете использовать этого бота."
-        )
-    logger.info(f"Сообщение от {username} ({user_id}): {text[:50]}")
+        return await update.message.reply_text("❌ Вы заблокированы и не можете использовать этого бота.")
 
     # Главное меню
     if text == '📦 Заказать презентацию':
@@ -395,10 +398,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == '📄 Мои заказы':
         user_orders = [o for o in orders if o.user_id == user_id]
         if not user_orders:
-            return await update.message.reply_text(
-                "У тебя пока нет заказов. 📭",
-                reply_markup=main_menu()
-            )
+            return await update.message.reply_text("У тебя пока нет заказов. 📭", reply_markup=main_menu())
         msg = f"📄 Твои заказы ({len(user_orders)} шт.):\n\n"
         for o in user_orders:
             msg += format_order(o) + "\n\n" + "─" * 25 + "\n\n"
@@ -423,17 +423,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text in ['🔙 Назад', '❌ Отмена']:
         sessions.pop(user_id, None)
-        return await update.message.reply_text(
-            "Возвращаюсь в главное меню 👇",
-            reply_markup=main_menu()
-        )
+        return await update.message.reply_text("Возвращаюсь в главное меню 👇", reply_markup=main_menu())
 
-    # --- ЭТАПЫ ОФОРМЛЕНИЯ ЗАКАЗА ---
     if not session:
-        return await update.message.reply_text(
-            "Используй меню 👇",
-            reply_markup=main_menu()
-        )
+        return await update.message.reply_text("Используй меню 👇", reply_markup=main_menu())
+
     step = session.get('step', '')
 
     # Выбор заказа для отмены
@@ -442,32 +436,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 order_id = int(text.split('#')[1].split('—')[0].strip())
             except (ValueError, IndexError):
-                return await update.message.reply_text(
-                    "❌ Ошибка. Попробуй снова.",
-                    reply_markup=main_menu()
-                )
+                return await update.message.reply_text("❌ Ошибка. Попробуй снова.", reply_markup=main_menu())
             order = next((o for o in orders if o.id == order_id and o.user_id == user_id), None)
             if not order:
                 sessions.pop(user_id, None)
-                return await update.message.reply_text(
-                    "❌ Заказ не найден.",
-                    reply_markup=main_menu()
-                )
+                return await update.message.reply_text("❌ Заказ не найден.", reply_markup=main_menu())
             session['cancel_order_id'] = order_id
             session['step'] = 'cancel_confirm'
             return await update.message.reply_text(
                 f"⚠️ Ты уверен, что хочешь отменить?\n\n"
                 f"{format_order(order)}\n\n"
                 "⚠️ Отменённый заказ нельзя восстановить!",
-                reply_markup=ReplyKeyboardMarkup(
-                    [['✅ Да, отменить'], ['❌ Нет, оставить']],
-                    resize_keyboard=True
-                )
+                reply_markup=ReplyKeyboardMarkup([['✅ Да, отменить'], ['❌ Нет, оставить']], resize_keyboard=True)
             )
         else:
             return await update.message.reply_text("Выбери заказ из списка 👇")
 
-    # Подтверждение отмены заказа
+    # Подтверждение отмены
     if step == 'cancel_confirm':
         order_id = session.get('cancel_order_id')
         order = next((o for o in orders if o.id == order_id and o.user_id == user_id), None)
@@ -477,10 +462,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 persist_orders()
                 update_stats_on_cancel(order)
             sessions.pop(user_id, None)
-            await update.message.reply_text(
-                f"✅ Заказ #{order_id} отменён!",
-                reply_markup=main_menu()
-            )
+            await update.message.reply_text(f"✅ Заказ #{order_id} отменён!", reply_markup=main_menu())
             await context.bot.send_message(
                 ADMIN_ID,
                 f"❌ Заказ #{order_id} отменён пользователем!\n\n"
@@ -489,21 +471,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif text == '❌ Нет, оставить':
             sessions.pop(user_id, None)
-            await update.message.reply_text(
-                "👍 Заказ остался активным.",
-                reply_markup=main_menu()
-            )
+            await update.message.reply_text("👍 Заказ остался активным.", reply_markup=main_menu())
         else:
             await update.message.reply_text(
                 "Выбери вариант из кнопок.",
-                reply_markup=ReplyKeyboardMarkup(
-                    [['✅ Да, отменить'], ['❌ Нет, оставить']],
-                    resize_keyboard=True
-                )
+                reply_markup=ReplyKeyboardMarkup([['✅ Да, отменить'], ['❌ Нет, оставить']], resize_keyboard=True)
             )
         return
 
-    # Обработка выбора "Сделать срочным" ночью (urgent_choice)
+    # Срочный заказ ночью
     if step == 'urgent_choice':
         if text == '🚨 Сделать СРОЧНЫМ (+30%)':
             sessions[user_id]['urgent'] = True
@@ -515,26 +491,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             sessions.pop(user_id, None)
-            return await update.message.reply_text(
-                "Оформление отменено.",
-                reply_markup=main_menu()
-            )
+            return await update.message.reply_text("Оформление отменено.", reply_markup=main_menu())
 
-    # Шаг выбора темы
+    # Шаг 1 — тема
     if step == 'topic':
         if len(text) < MIN_TOPIC_LEN:
-            return await update.message.reply_text(
-                "❌ Тема слишком короткая. Минимум 3 символа."
-            )
+            return await update.message.reply_text("❌ Тема слишком короткая. Минимум 3 символа.")
         if len(text) > 200:
-            return await update.message.reply_text(
-                "❌ Тема слишком длинная. Максимум 200 символов."
-            )
+            return await update.message.reply_text("❌ Тема слишком длинная. Максимум 200 символов.")
         session['topic'] = text
         session['step'] = 'slides'
         return await update.message.reply_text(
-            "📊 Шаг 2/5\n\n"
-            f"Сколько слайдов нужно? (от {MIN_SLIDES} до {MAX_SLIDES})\n\n"
+            f"📊 Шаг 2/5\n\nСколько слайдов нужно? (от {MIN_SLIDES} до {MAX_SLIDES})\n\n"
             "Примеры:\n"
             "• 5 слайдов — краткая\n"
             "• 10-15 слайдов — стандартная\n"
@@ -542,27 +510,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
         )
 
-    # Шаг выбора числа слайдов
+    # Шаг 2 — количество слайдов
     if step == 'slides':
         if not text.isdigit():
-            return await update.message.reply_text(
-                "❌ Введи только число. Например: 10"
-            )
+            return await update.message.reply_text("❌ Введи только число. Например: 10")
         slides = int(text)
         if not MIN_SLIDES <= slides <= MAX_SLIDES:
-            return await update.message.reply_text(
-                f"❌ Введи число от {MIN_SLIDES} до {MAX_SLIDES}."
-            )
+            return await update.message.reply_text(f"❌ Введи число от {MIN_SLIDES} до {MAX_SLIDES}.")
         session['slides'] = slides
         urgent = session.get('urgent', False)
         price = calculate_price(slides, urgent)
         minutes, ready_at = estimate_ready_time(slides)
         session.update(price)
         session['step'] = 'deadline'
-        urgent_text = (
-            f"\n⚡ Срочная наценка: +{URGENT_SURCHARGE_PERCENT}%"
-            if urgent else ""
-        )
+        urgent_text = f"\n⚡ Срочная наценка: +{URGENT_SURCHARGE_PERCENT}%" if urgent else ""
         return await update.message.reply_text(
             f"✅ Отлично! {slides} слайдов\n\n"
             f"💰 Расчёт стоимости:\n"
@@ -571,57 +532,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{urgent_text}\n"
             f"   Итого: {price['final']} ₽\n\n"
             f"⏱ Готовность примерно через {minutes} мин (к {ready_at})\n\n"
-            "📅 Шаг 3/5\n\n"
-            "Укажи дедлайн:\n"
-            "Например: 20.05.2025 или «до пятницы»",
+            "📅 Шаг 3/5\n\nУкажи дедлайн:\nНапример: 20.05.2025 или «до пятницы»",
             reply_markup=ReplyKeyboardMarkup([['❌ Отмена']], resize_keyboard=True)
         )
 
-    # Шаг выбора дедлайна
+    # Шаг 3 — дедлайн
     if step == 'deadline':
         if len(text) < MIN_DEADLINE_LEN:
             return await update.message.reply_text(
-                "❌ Укажи дедлайн подробнее.\n"
-                "Например: 20.05.2025 или «до пятницы»"
+                "❌ Укажи дедлайн подробнее.\nНапример: 20.05.2025 или «до пятницы»"
             )
         session['deadline'] = text
         session['step'] = 'notes'
         return await update.message.reply_text(
-            "📝 Шаг 4/5\n\n"
-            "Есть ли пожелания к презентации?\n\n"
+            "📝 Шаг 4/5\n\nЕсть ли пожелания к презентации?\n\n"
             "Например:\n"
             "• Больше картинок, минимум текста\n"
             "• Деловой стиль, синие тона\n"
             "• Много графиков и диаграмм\n\n"
             "Если нет — напиши «нет»",
-            reply_markup=ReplyKeyboardMarkup(
-                [['Нет пожеланий'], ['❌ Отмена']],
-                resize_keyboard=True
-            )
+            reply_markup=ReplyKeyboardMarkup([['Нет пожеланий'], ['❌ Отмена']], resize_keyboard=True)
         )
 
-    # Шаг пожеланий к презентации
+    # Шаг 4 — пожелания
     if step == 'notes':
         if text == 'Нет пожеланий':
             text = 'нет'
         session['notes'] = text
         session['step'] = 'remind'
         return await update.message.reply_text(
-            "🔔 Шаг 5/5\n\n"
-            "Хочешь напоминание за 1 день до дедлайна?\n\n"
-            "Напиши «да» или «нет»",
-            reply_markup=ReplyKeyboardMarkup(
-                [['✅ Да'], ['❌ Нет']],
-                resize_keyboard=True
-            )
+            "🔔 Шаг 5/5\n\nХочешь напоминание за 1 день до дедлайна?\n\nНапиши «да» или «нет»",
+            reply_markup=ReplyKeyboardMarkup([['✅ Да'], ['❌ Нет']], resize_keyboard=True)
         )
 
-    # Шаг напоминания о дедлайне
+    # Шаг 5 — напоминание
     if step == 'remind':
         if text.lower() not in ['да', 'нет', '✅ да', '❌ нет']:
-            return await update.message.reply_text(
-                "Напиши «да» или «нет» 👇"
-            )
+            return await update.message.reply_text("Напиши «да» или «нет» 👇")
         session['remind'] = text.lower() in ['да', '✅ да']
         session['step'] = 'confirm'
         urgent = session.get('urgent', False)
@@ -645,12 +592,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + format_order(preview)
             + "\n\n✅ Всё верно? Подтверди заказ:",
             reply_markup=ReplyKeyboardMarkup(
-                [['✅ Да, всё верно'], ['❌ Нет, начать заново']],
-                resize_keyboard=True
+                [['✅ Да, всё верно'], ['❌ Нет, начать заново']], resize_keyboard=True
             )
         )
 
-    # Подтверждение заказа — оформление заказа и ожидание обращения для оплаты по username!
+    # Подтверждение заказа
     if step == 'confirm':
         if text in ['✅ Да, всё верно', 'да']:
             urgent = session.get('urgent', False)
@@ -676,21 +622,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             persist_stats()
             sessions.pop(user_id, None)
 
-            # --- МЕССЕДЖ для оплаты ТОЛЬКО через обращение к админу! ---
             await update.message.reply_text(
-                
                 f"✅ Заказ #{new_order.id} создан!\n\n"
-                f"💰 К оплате: {new_order.final} ₽\n"
-                "——" * 16 + "\n\n"
-                f"❗ Чтобы оплатить заказ, ОБЯЗАТЕЛЬНО напишите @{ADMIN_USERNAME} 👈\n"
-                f"В сообщении укажите номер заказа и дождитесь реквизитов для оплаты.\n\n"
-                "После оплаты вернитесь сюда и нажмите 👇 '✅ Я оплатил'",
+                f"💰 К оплате: {new_order.final} ₽\n\n"
+                f"❗ Чтобы оплатить заказ, напишите @{ADMIN_USERNAME} 👈\n"
+                f"В сообщении укажите номер заказа и дождитесь реквизитов.\n\n"
+                "После оплаты вернитесь сюда и нажмите «✅ Я оплатил»",
                 reply_markup=payment_menu()
             )
-            sessions[user_id] = {
-                'step': 'waiting_payment',
-                'order_id': new_order.id
-            }
+            sessions[user_id] = {'step': 'waiting_payment', 'order_id': new_order.id}
             await context.bot.send_message(
                 ADMIN_ID,
                 f"📥 Новый заказ #{new_order.id} ожидает оплаты!\n\n"
@@ -699,84 +639,57 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif text in ['❌ Нет, начать заново', 'нет']:
             sessions.pop(user_id, None)
-            await update.message.reply_text(
-                "❌ Заказ отменён. Начни заново 👇",
-                reply_markup=main_menu()
-            )
+            await update.message.reply_text("❌ Заказ отменён. Начни заново 👇", reply_markup=main_menu())
         else:
             await update.message.reply_text(
                 "Выбери вариант из кнопок 👇",
                 reply_markup=ReplyKeyboardMarkup(
-                    [['✅ Да, всё верно'], ['❌ Нет, начать заново']],
-                    resize_keyboard=True
+                    [['✅ Да, всё верно'], ['❌ Нет, начать заново']], resize_keyboard=True
                 )
             )
         return
 
-    # Ожидание оплаты (возврат сообщения если человек зашел раньше времени)
+    # Ожидание оплаты
     if step == 'waiting_payment':
         order_id = session.get('order_id')
-        await update.message.reply_text(
-            f"⏳ Заказ #{order_id} ожидает оплаты.\n\n"
-            f"❗ Для получения реквизитов обязательно напишите @{ADMIN_USERNAME}\n"
-            "После оплаты вернитесь и нажмите кнопку '✅ Я оплатил'",
-            reply_markup=payment_menu()
-        )
-        return
-
-    # Кнопка оплаты — пользователь сообщил, что оплатил
-    if text == '✅ Я оплатил':
-        current_session = sessions.get(user_id, {})
-        order_id = current_session.get('order_id')
-        order = next((o for o in orders if o.id == order_id), None)
-        if not order:
-            return await update.message.reply_text(
-                "❌ Заказ не найден.",
+        if text == '✅ Я оплатил':
+            order = next((o for o in orders if o.id == order_id), None)
+            if not order:
+                return await update.message.reply_text("❌ Заказ не найден.", reply_markup=main_menu())
+            sessions.pop(user_id, None)
+            await update.message.reply_text(
+                "⏳ Ожидай подтверждения оплаты от администратора.\n"
+                "Обычно это занимает несколько минут. 😊",
                 reply_markup=main_menu()
             )
-        sessions.pop(user_id, None)
-        await update.message.reply_text(
-            "⏳ Ожидай подтверждения оплаты от администратора.\n"
-            "Обычно это занимает несколько минут. 😊",
-            reply_markup=main_menu()
-        )
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"💰 Пользователь сообщил об оплате!\n\n"
-            f"👤 @{username} (ID: {user_id})\n\n"
-            f"{format_order(order)}\n\n"
-            f"✅ Подтвердить: /confirm {order_id}\n"
-            f"❌ Отклонить: /reject {order_id}"
-        )
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"💰 Пользователь сообщил об оплате!\n\n"
+                f"👤 @{username} (ID: {user_id})\n\n"
+                f"{format_order(order)}\n\n"
+                f"✅ Подтвердить: /confirm {order_id}\n"
+                f"❌ Отклонить: /reject {order_id}"
+            )
+        elif text == '❌ Отменить заказ':
+            order = next((o for o in orders if o.id == order_id), None)
+            if order:
+                order.status = STATUS_CANCELLED
+                persist_orders()
+                update_stats_on_cancel(order)
+            sessions.pop(user_id, None)
+            await update.message.reply_text(f"✅ Заказ #{order_id} отменён.", reply_markup=main_menu())
+        else:
+            await update.message.reply_text(
+                f"⏳ Заказ #{order_id} ожидает оплаты.\n\n"
+                f"❗ Для получения реквизитов напишите @{ADMIN_USERNAME}\n"
+                "После оплаты нажмите «✅ Я оплатил»",
+                reply_markup=payment_menu()
+            )
         return
 
-    # Ловим ошибку если текст не обработан — всегда показываем меню
-    await update.message.reply_text(
-        "Используй меню 👇",
-        reply_markup=main_menu()
-    )
+    await update.message.reply_text("Используй меню 👇", reply_markup=main_menu())
 
-    # --- ОТМЕНА ЗАКАЗА ЗАПУСКОМ ОТДЕЛЬНОЙ КОМАНДЫ ---
-async def cancel_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_orders = [
-        o for o in orders
-        if o.user_id == user_id and o.status not in [STATUS_DONE, STATUS_CANCELLED]
-    ]
-    if not user_orders:
-        return await update.message.reply_text(
-            "📭 У тебя нет активных заказов для отмены.",
-            reply_markup=main_menu()
-        )
-    sessions[user_id] = {"step": "cancel_choose"}
-    await update.message.reply_text(
-        "🗑 Выбери заказ для отмены:\n\n"
-        "⚠️ Отменённый заказ нельзя восстановить!",
-        reply_markup=cancel_menu(user_orders)
-    )
-
-# --- АДМИНИСТРАТОРСКИЕ КОМАНДЫ ---
-
+# ===== Команды администратора =====
 async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -847,43 +760,37 @@ async def admin_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❌ Нет прав.")
     paid_orders = [o for o in orders if o.status == STATUS_PAID]
     if not paid_orders:
-        return await update.message.reply_text(
-            "📭 Нет оплаченных заказов в работе."
-        )
+        return await update.message.reply_text("📭 Нет оплаченных заказов в работе.")
     msg = f"✅ Оплаченные заказы ({len(paid_orders)} шт.):\n\n"
     for o in paid_orders:
         msg += (
             f"{format_order(o)}\n\n"
-            f"📎 Отправить файл: /send {o.id}\n\n"
+            f"📎 Отправить свой файл: /send {o.id}\n\n"
             "─" * 25 + "\n\n"
         )
     for i in range(0, len(msg), 4000):
         await update.message.reply_text(msg[i:i+4000])
 
-        # --- ПОДТВЕРЖДЕНИЕ/ОТКЛОНЕНИЕ ОПЛАТЫ ---
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
     try:
         order_id = int(context.args[0])
     except (IndexError, ValueError):
-        return await update.message.reply_text(
-            "❌ Используй: /confirm <id>"
-        )
+        return await update.message.reply_text("❌ Используй: /confirm <id>")
     order = next((o for o in orders if o.id == order_id), None)
     if not order:
         return await update.message.reply_text("❌ Заказ не найден.")
     if order.status != STATUS_WAITING_PAYMENT:
         return await update.message.reply_text(
-            f"❌ Заказ #{order_id} не ожидает оплаты.\n"
-            f"Текущий статус: {order.status}"
+            f"❌ Заказ #{order_id} не ожидает оплаты.\nТекущий статус: {order.status}"
         )
     order.status = STATUS_PAID
     order.paid_at = datetime.now().strftime("%d.%m.%Y %H:%M")
     persist_orders()
     await update.message.reply_text(
         f"✅ Оплата заказа #{order_id} подтверждена!\n\n"
-        f"Теперь отправь файл: /send {order_id}"
+        f"📎 Отправить свой файл: /send {order_id}"
     )
     await context.bot.send_message(
         order.user_id,
@@ -893,7 +800,6 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Слайдов: {order.slides}\n\n"
         f"Скоро пришлю готовую презентацию! 🎉"
     )
-    logger.info(f"Оплата заказа #{order_id} подтверждена")
 
 async def reject_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -901,52 +807,36 @@ async def reject_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         order_id = int(context.args[0])
     except (IndexError, ValueError):
-        return await update.message.reply_text(
-            "❌ Используй: /reject <id>"
-        )
+        return await update.message.reply_text("❌ Используй: /reject <id>")
     order = next((o for o in orders if o.id == order_id), None)
     if not order:
         return await update.message.reply_text("❌ Заказ не найден.")
     order.status = STATUS_PAYMENT_REJECTED
     persist_orders()
-    await update.message.reply_text(
-        f"❌ Оплата заказа #{order_id} отклонена."
-    )
+    await update.message.reply_text(f"❌ Оплата заказа #{order_id} отклонена.")
     await context.bot.send_message(
         order.user_id,
         f"❌ Оплата по заказу #{order.id} не подтверждена.\n\n"
         "Проверь перевод и реквизиты, затем попробуй снова или напиши администратору."
     )
-    logger.info(f"Оплата заказа #{order_id} отклонена")
 
-# --- ОТПРАВКА ФАЙЛОВ КЛИЕНТАМ ---
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
     try:
         order_id = int(context.args[0])
     except (IndexError, ValueError):
-        return await update.message.reply_text(
-            "❌ Используй: /send <id>\nПример: /send 3"
-        )
+        return await update.message.reply_text("❌ Используй: /send <id>\nПример: /send 3")
     order = next((o for o in orders if o.id == order_id), None)
     if not order:
         return await update.message.reply_text("❌ Заказ не найден.")
     if order.status == STATUS_CANCELLED:
-        return await update.message.reply_text(
-            f"❌ Заказ #{order_id} отменён!"
-        )
+        return await update.message.reply_text(f"❌ Заказ #{order_id} отменён!")
     if order.status == STATUS_DONE:
-        return await update.message.reply_text(
-            f"✅ Заказ #{order_id} уже завершён!"
-        )
+        return await update.message.reply_text(f"✅ Заказ #{order_id} уже завершён!")
     if order.status == STATUS_WAITING_PAYMENT:
         return await update.message.reply_text(
-            f"⏳ Заказ #{order_id} ещё не оплачен! Сначала подтвердите оплату: /confirm {order_id}"
-        )
-    if order.status == STATUS_PAYMENT_REJECTED:
-        return await update.message.reply_text(
-            f"❌ Оплата заказа #{order_id} была отклонена!"
+            f"⏳ Заказ #{order_id} ещё не оплачен! Сначала: /confirm {order_id}"
         )
     admin_upload[update.effective_user.id] = order_id
     order.status = STATUS_WAITING_FILE
@@ -966,9 +856,7 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     order_id = admin_upload.get(user_id)
     if not order_id:
-        return await update.message.reply_text(
-            "❌ Сначала выбери заказ через /send <id>"
-        )
+        return await update.message.reply_text("❌ Сначала выбери заказ через /send <id>")
     order = next((o for o in orders if o.id == order_id), None)
     if not order:
         admin_upload.pop(user_id, None)
@@ -982,8 +870,7 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📌 Тема: {order.topic}\n"
             f"📊 Слайдов: {order.slides}\n"
             f"💰 Оплачено: {order.final} ₽\n\n"
-            "Спасибо за заказ! 🎉\n"
-            "Буду рад видеть тебя снова! 😊"
+            "Спасибо за заказ! 🎉\nБуду рад видеть тебя снова! 😊"
         )
     )
     order.status = STATUS_DONE
@@ -992,14 +879,11 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_stats_on_complete(order)
     admin_upload.pop(user_id, None)
     await update.message.reply_text(
-        f"✅ Файл отправлен!\n"
-        f"Заказ #{order.id} закрыт. ✅\n\n"
+        f"✅ Файл отправлен!\nЗаказ #{order.id} закрыт. ✅\n\n"
         f"👤 Клиент: @{order.username}\n"
         f"💰 Сумма: {order.final} ₽"
     )
-    logger.info(f"Заказ #{order_id} завершён")
 
-# --- АДМИН-БЛОКИРОВКА, РАЗБЛОКИРОВКА, РАССЫЛКА ---
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Нет прав.")
@@ -1013,7 +897,6 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(f"⚠️ Пользователь {target_id} уже заблокирован.")
     blocked_users.append(target_id)
     await update.message.reply_text(f"✅ Пользователь {target_id} заблокирован.")
-    logger.info(f"Пользователь {target_id} заблокирован")
 
 async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -1026,7 +909,6 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(f"⚠️ Пользователь {target_id} не заблокирован.")
     blocked_users.remove(target_id)
     await update.message.reply_text(f"✅ Пользователь {target_id} разблокирован.")
-    logger.info(f"Пользователь {target_id} разблокирован")
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -1043,18 +925,13 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if uid in blocked_users:
             continue
         try:
-            await context.bot.send_message(
-                uid,
-                f"📢 Сообщение от администратора:\n\n{message}"
-            )
+            await context.bot.send_message(uid, f"📢 Сообщение от администратора:\n\n{message}")
             sent += 1
         except Exception as e:
             logger.error(f"Ошибка рассылки для {uid}: {e}")
             failed += 1
     await update.message.reply_text(
-        f"✅ Рассылка завершена!\n\n"
-        f"📤 Отправлено: {sent}\n"
-        f"❌ Ошибок: {failed}"
+        f"✅ Рассылка завершена!\n\n📤 Отправлено: {sent}\n❌ Ошибок: {failed}"
     )
 
 async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1069,8 +946,9 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — статистика бота\n\n"
         "💳 Оплата:\n"
         "/confirm <id> — подтвердить оплату\n"
-        "/reject <id> — отклонить оплату\n"
-        "/send <id> — отправить файл клиенту\n\n"
+        "/reject <id> — отклонить оплату\n\n"
+        "📎 Отправка:\n"
+        "/send <id> — отправить свой файл клиенту\n\n"
         "👥 Пользователи:\n"
         "/block <user_id> — заблокировать\n"
         "/unblock <user_id> — разблокировать\n"
@@ -1078,34 +956,28 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
-# --- ЗАПУСК БОТА ---
+# ===== Запуск бота =====
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
-
     if not BOT_TOKEN:
         raise ValueError("❌ BOT_TOKEN не найден в .env")
     if not ADMIN_ID:
         raise ValueError("❌ ADMIN_ID не найден в .env")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).job_queue(None).build()
 
-    # Команды для всех
     app.add_handler(CommandHandler("start", start))
-
-    # Команды для администратора
     app.add_handler(CommandHandler("orders", admin_orders))
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("pending", admin_pending))
     app.add_handler(CommandHandler("paid", admin_paid))
-    app.add_handler(CommandHandler("send", send_command))
     app.add_handler(CommandHandler("confirm", confirm_payment))
     app.add_handler(CommandHandler("reject", reject_payment))
+    app.add_handler(CommandHandler("send", send_command))
     app.add_handler(CommandHandler("block", admin_block))
     app.add_handler(CommandHandler("unblock", admin_unblock))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler("adminhelp", admin_help))
-
-    # Обработчики сообщений
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_doc))
 
@@ -1115,8 +987,7 @@ def main():
     print(f"🎁 Скидка: {DISCOUNT_PERCENT}% от {DISCOUNT_FROM_SLIDES} слайдов")
     print(f"🌙 Ночной режим: с {NIGHT_START}:00 до {NIGHT_END}:00")
     print(f"⚡ Срочная наценка: +{URGENT_SURCHARGE_PERCENT}%")
-    print(f"‼️ Все оплаты строго через @{ADMIN_USERNAME}")
-
+    print(f"‼️ Все оплаты через @{ADMIN_USERNAME}")
     app.run_polling()
 
 if __name__ == "__main__":
