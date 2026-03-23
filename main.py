@@ -72,8 +72,18 @@ def main():
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+        .connect_timeout(60.0)
+        .read_timeout(60.0)
+        .write_timeout(60.0)
+        .pool_timeout(10.0)
+        .get_updates_connect_timeout(60.0)
+        .get_updates_read_timeout(60.0)
+        .get_updates_write_timeout(60.0)
+        .get_updates_pool_timeout(10.0)
+        .job_queue(None)
         .build()
     )
+
     # ===== Регистрируем хендлеры =====
     # partial() — передаём данные в хендлеры без глобальных переменных
 
