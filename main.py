@@ -72,11 +72,6 @@ def main():
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-        .connect_timeout(60.0)
-        .read_timeout(60.0)
-        .write_timeout(60.0)
-        .pool_timeout(10.0)
-        .job_queue(None)
         .build()
     )
     # ===== Регистрируем хендлеры =====
