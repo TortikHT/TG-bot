@@ -1,8 +1,3 @@
-# Telegram Bot API
-python-telegram-bot==21.3
-
-# HTTP-клиент для Hugging Face API
+python-telegram-bot==20.7
 httpx==0.27.0
-
-# Переменные окружения из .env
 python-dotenv==1.0.1
